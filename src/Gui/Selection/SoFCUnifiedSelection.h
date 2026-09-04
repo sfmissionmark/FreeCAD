@@ -130,18 +130,24 @@ private:
         std::string element;
     };
 
+    // Python SelectionGate.allow() is far too expensive to re-run for every
+    // Coin hit. Cache hasGate/passesGate per view provider for one pick list.
+    using GateEvalCache =
+        std::unordered_map<const ViewProviderDocumentObject*, std::pair<bool, bool>>;
+
     static bool passesSelectionGate(const PickedInfo&);
     static bool hasSelectionGate(const PickedInfo&);
     static SelectionPickPolicy::Candidate getPickCandidate(
         const PickedInfo&,
         const Document*,
-        const PickedInfo* firstPicked = nullptr
+        const PickedInfo* firstPicked = nullptr,
+        GateEvalCache* gateCache = nullptr
     );
     static std::vector<SelectionPickPolicy::Candidate> getPickCandidates(
         const std::vector<PickedInfo>&,
-        const Document*
+        const Document*,
+        GateEvalCache* gateCache = nullptr
     );
-    static bool canFinalizeSinglePick(const std::vector<PickedInfo>&);
 
     bool setPreselect(const PickedInfo&);
     bool setPreselect(

@@ -630,30 +630,26 @@ class PostProcessor:
             self._jobs = [job]
             self._job = job  # FIXME: MS move to the loop
 
-        # Get machine
-        if self._job is None:
-            self._machine = None
-        elif hasattr(self._job, "Machine"):
-            try:
-                machine = MachineFactory.get_machine(self._job.Machine)
-                if machine is None:
-                    # Machine not found in factory - allow manual assignment later
+        # Get machine. An empty Job.Machine is "not configured", not "missing".
+        # Do not warn or touch the factory for a blank name — that happens on
+        # document restore for jobs created before a machine was assigned, and
+        # the warning was the last line before a restore-time segfault.
+        self._machine = None
+        if self._job is not None and hasattr(self._job, "Machine"):
+            machine_name = str(getattr(self._job, "Machine", "") or "").strip()
+            if machine_name:
+                try:
+                    machine = MachineFactory.get_machine(machine_name)
+                    if machine is None:
+                        Path.Log.warning(
+                            f"Machine '{machine_name}' not found in factory. Machine can be set manually."
+                        )
+                    else:
+                        self._machine = machine
+                except FileNotFoundError as e:
                     Path.Log.warning(
-                        f"Machine '{self._job.Machine}' not found in factory. Machine can be set manually."
+                        f"Machine '{machine_name}' not found: {e}. Machine can be set manually."
                     )
-                    self._machine = None
-                else:
-                    self._machine = machine
-            except FileNotFoundError as e:
-                # Machine not found in factory - allow manual assignment later (e.g., in tests)
-                # FIXME: if this is only for tests, remove it
-                Path.Log.warning(
-                    f"Machine '{self._job.Machine}' not found: {e}. Machine can be set manually."
-                )
-                self._machine = None
-        else:
-            # Job doesn't have Machine attribute yet (e.g., MockJob or legacy job)
-            self._machine = None
         self.reinitialize()
 
         self._operations = []
@@ -662,10 +658,40 @@ class PostProcessor:
             self._job = job["job"]
             self._operations = job["operations"]
         if not self._operations:
-            # get all operations from 'Operations' group
-            self._operations = (
-                getattr(self._job.Operations, "Group", []) if self._job is not None else []
-            )
+            self._operations = self._safe_job_operations(self._job)
+
+    @staticmethod
+    def _document_is_restoring(job) -> bool:
+        try:
+            if FreeCAD.isRestoring():
+                return True
+        except Exception:
+            pass
+        if job is None:
+            return False
+        try:
+            if job.isRestoring():
+                return True
+        except Exception:
+            pass
+        return False
+
+    def _safe_job_operations(self, job):
+        """Operations.Group, or [] while restoring / if the job is incomplete.
+
+        Touching Operations.Group during document restore has left dangling
+        PropertyLinkSubList entries that later segfault in
+        updateAllElementReferences.
+        """
+        if job is None or self._document_is_restoring(job):
+            return []
+        try:
+            ops = getattr(job, "Operations", None)
+            if ops is None:
+                return []
+            return list(getattr(ops, "Group", []) or [])
+        except Exception:
+            return []
 
     @classmethod
     def exists(cls, processor):
@@ -718,6 +744,8 @@ class PostProcessor:
 
         Override to force _machine.x, or .values if needed
         """
+        if not self._machine:
+            return
 
         # Machine level
         self.values["MACHINE_NAME"] = self._machine.name
@@ -882,7 +910,8 @@ class PostProcessor:
         """
         # Stage 1 — machine postprocessor_properties
         bundle = {}
-        bundle.update(self._machine.postprocessor_properties)
+        if self._machine:
+            bundle.update(self._machine.postprocessor_properties)
 
         # Stage 2 — schema defaults for missing keys
         schema = self.get_full_property_schema()
@@ -930,6 +959,12 @@ class PostProcessor:
             overrides: Optional dict passed through to build_configuration_bundle().
         """
         self.values = {}
+
+        if not self._machine:
+            raise CAMAttributeError(
+                "No machine is configured on this Job. Set Job → Machine before posting.",
+                job=self._job,
+            )
 
         if overrides is None:
             overrides = self._read_job_overrides()
@@ -1130,6 +1165,8 @@ class PostProcessor:
         Subclasses can override to customize spindle wait behavior.
         """
 
+        if not self._machine:
+            return
         spindle = self._machine.get_spindle_by_index(0)  # FIXME: should be an annotation
         if not (spindle and spindle.spindle_wait > 0):
             return
@@ -1154,6 +1191,8 @@ class PostProcessor:
 
         Subclasses can override to customize coolant delay behavior.
         """
+        if not self._machine:
+            return
         spindle = self._machine.get_spindle_by_index(0)  # FIXME: needs to be in .values
         if not (spindle and spindle.coolant_delay > 0):
             return
@@ -2026,6 +2065,12 @@ class PostProcessor:
         6. Remote Posting - Post-processing network operations
         """
         Path.Log.debug("Starting export2()")
+
+        if not self._machine:
+            raise CAMAttributeError(
+                "No machine is configured on this Job. Set Job → Machine before posting.",
+                job=self._job,
+            )
 
         # ===== STAGE 0: PRE-PROCESSING DIALOG =====
         if not self.pre_processing_dialog():

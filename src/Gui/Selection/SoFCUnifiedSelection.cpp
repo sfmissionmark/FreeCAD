@@ -358,15 +358,31 @@ bool SoFCUnifiedSelection::hasSelectionGate(const PickedInfo& info)
 SelectionPickPolicy::Candidate SoFCUnifiedSelection::getPickCandidate(
     const PickedInfo& info,
     const Document* doc,
-    const PickedInfo* firstPicked
+    const PickedInfo* firstPicked,
+    GateEvalCache* gateCache
 )
 {
     SelectionPickPolicy::Candidate candidate;
     candidate.owner = info.vpd;
     candidate.priority = getPriority(info.pp);
     candidate.isAnnotation = doc && info.pp && isAnnotationPick(info.pp, doc);
-    candidate.hasGate = hasSelectionGate(info);
-    candidate.passesGate = passesSelectionGate(info);
+
+    bool resolvedFromCache = false;
+    if (info.vpd && gateCache) {
+        auto cached = gateCache->find(info.vpd);
+        if (cached != gateCache->end()) {
+            candidate.hasGate = cached->second.first;
+            candidate.passesGate = cached->second.second;
+            resolvedFromCache = true;
+        }
+    }
+    if (!resolvedFromCache) {
+        candidate.hasGate = hasSelectionGate(info);
+        candidate.passesGate = passesSelectionGate(info);
+        if (info.vpd && gateCache) {
+            gateCache->emplace(info.vpd, std::make_pair(candidate.hasGate, candidate.passesGate));
+        }
+    }
 
     if (firstPicked && info.pp && firstPicked->pp) {
         candidate.closeToFirst = info.pp->getPoint().equals(firstPicked->pp->getPoint(), 0.2F);
@@ -377,22 +393,18 @@ SelectionPickPolicy::Candidate SoFCUnifiedSelection::getPickCandidate(
 
 std::vector<SelectionPickPolicy::Candidate> SoFCUnifiedSelection::getPickCandidates(
     const std::vector<PickedInfo>& picked,
-    const Document* doc
+    const Document* doc,
+    GateEvalCache* gateCache
 )
 {
     std::vector<SelectionPickPolicy::Candidate> candidates;
     candidates.reserve(picked.size());
     const PickedInfo* firstPicked = picked.empty() ? nullptr : &picked.front();
     for (const auto& info : picked) {
-        candidates.push_back(getPickCandidate(info, doc, firstPicked));
+        candidates.push_back(getPickCandidate(info, doc, firstPicked, gateCache));
     }
 
     return candidates;
-}
-
-bool SoFCUnifiedSelection::canFinalizeSinglePick(const std::vector<PickedInfo>& picked)
-{
-    return SelectionPickPolicy::canFinalizeSinglePick(getPickCandidates(picked, nullptr));
 }
 
 std::vector<SoFCUnifiedSelection::PickedInfo> SoFCUnifiedSelection::getPickedList(
@@ -402,6 +414,9 @@ std::vector<SoFCUnifiedSelection::PickedInfo> SoFCUnifiedSelection::getPickedLis
 {
     ViewProvider* last_vp = nullptr;
     std::vector<PickedInfo> ret;
+    GateEvalCache gateCache;
+    bool sawSelectionGate = false;
+    bool anyPassedGate = false;
     const SoPickedPointList& points = action->getPickedPointList();
     for (int i = 0, count = points.getLength(); i < count; ++i) {
         PickedInfo info;
@@ -411,7 +426,10 @@ std::vector<SoFCUnifiedSelection::PickedInfo> SoFCUnifiedSelection::getPickedLis
         auto path = Gui::toFullPath(info.pp->getPath());
         if (this->pcDocument && path && path->containsPath(action->getCurPath())) {
             vp = this->pcDocument->getViewProviderByPathFromHead(path);
-            if (singlePick && last_vp && last_vp != vp && canFinalizeSinglePick(ret)) {
+            // Same policy as canFinalizeSinglePick, without re-running a Python
+            // SelectionGate on every Coin hit already in `ret` (O(n²) freeze).
+            if (singlePick && last_vp && last_vp != vp
+                && (!sawSelectionGate || anyPassedGate)) {
                 break;
             }
         }
@@ -444,6 +462,10 @@ std::vector<SoFCUnifiedSelection::PickedInfo> SoFCUnifiedSelection::getPickedLis
             last_vp = vp;
         }
         ret.push_back(info);
+
+        auto cached = getPickCandidate(info, nullptr, nullptr, &gateCache);
+        sawSelectionGate = sawSelectionGate || cached.hasGate;
+        anyPassedGate = anyPassedGate || cached.passesGate;
     }
 
     if (ret.size() <= 1) {
@@ -454,7 +476,7 @@ std::vector<SoFCUnifiedSelection::PickedInfo> SoFCUnifiedSelection::getPickedLis
     // If the preferred point is rejected by the active selection gate, choose the first allowed
     // candidate still inside the viewer pick radius.
     auto pickedIndex = SelectionPickPolicy::choosePreferredPick(
-        getPickCandidates(ret, this->pcDocument)
+        getPickCandidates(ret, this->pcDocument, &gateCache)
     );
     auto itPicked = ret.begin() + pickedIndex;
 

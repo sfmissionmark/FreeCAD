@@ -85,6 +85,15 @@ DocumentObject::DocumentObject()
 
 DocumentObject::~DocumentObject()
 {
+    // Derived members (AttachExtension, …) are already gone. Only drop this
+    // pointer as an _ElementRefMap key so a later Placement change cannot
+    // walk inbound properties of a reused address.
+    try {
+        PropertyLinkBase::breakElementReferences(this, false);
+    }
+    catch (...) {
+    }
+
     if (!PythonObject.is(Py::_None())) {
         Base::PyGILStateLocker lock;
         // Remark: The API of Py::Object has been changed to set whether the wrapper owns the passed
@@ -1568,6 +1577,12 @@ void DocumentObject::setupObject()
 
 void DocumentObject::unsetupObject()
 {
+    try {
+        PropertyLinkBase::breakElementReferences(this);
+    }
+    catch (...) {
+    }
+
     // call all extensions
     auto vector = getExtensionsDerivedFromType<App::DocumentObjectExtension>();
     for (auto ext : vector) {

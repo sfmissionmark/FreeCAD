@@ -4716,6 +4716,11 @@ void ViewProviderSketch::camSensCB(void* data, SoSensor*)
         return;
 
     auto vp = proxyVPrdr->vp;
+    // Coin may still deliver a queued camera sensor after unsetEditViewer
+    // detaches it and finishEditing has already destroyed editCoinManager.
+    if (!vp || !vp->isInEditMode())
+        return;
+
     auto cam = proxyVPrdr->renderMgr->getCamera();
 
     if (cam == nullptr)
@@ -4726,6 +4731,12 @@ void ViewProviderSketch::camSensCB(void* data, SoSensor*)
 
 void ViewProviderSketch::onCameraChanged(SoCamera* cam)
 {
+    // Guard against delayed Coin camera sensors that fire after sketch edit
+    // teardown (TempoVis camera restore / CueMaker Layout reframes). Without
+    // this, editCoinManager->updateAxesLength null-dereferences (SIGSEGV).
+    if (!editCoinManager)
+        return;
+
     auto rotSk = Base::Rotation(getDocument()->getEditingTransform());// sketch orientation
     auto rotc = cam->orientation.getValue().getValue();
     auto rotCam =

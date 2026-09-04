@@ -33,6 +33,9 @@
 
 #include <App/Application.h>
 #include <Precision.hxx>
+#include <Standard_Failure.hxx>
+#include <Base/Console.h>
+#include <Base/Exception.h>
 #include <Base/Vector3D.h>
 #include <Mod/Part/App/Geometry.h>
 #include <Mod/Sketcher/App/Sketch.h>
@@ -229,8 +232,37 @@ void DrawSketchHandlerDragAutoConstraint::update(
     }
 
     QTimer::singleShot(getDragAutoConstraintDelay(), dwellTimerContext.get(), [this, timerGeneration]() {
-        if (timerGeneration == dwellTimerGeneration) {
+        if (timerGeneration != dwellTimerGeneration) {
+            return;
+        }
+        // OCCT failures here become Base::CADKernelError. On macOS that exception
+        // aborts if it leaves this slot (Cocoa does not unwind C++ exceptions).
+        try {
             updateSuggestions();
+        }
+        catch (const Base::Exception& e) {
+            Base::Console().log(
+                "Sketcher: drag auto-constraint suggestion skipped (%s)\n",
+                e.what()
+            );
+            suggestedConstraints.clear();
+            unsetCursor();
+        }
+        catch (const Standard_Failure& e) {
+            Base::Console().log(
+                "Sketcher: drag auto-constraint suggestion skipped (%s)\n",
+                e.GetMessageString()
+            );
+            suggestedConstraints.clear();
+            unsetCursor();
+        }
+        catch (const std::exception& e) {
+            Base::Console().log(
+                "Sketcher: drag auto-constraint suggestion skipped (%s)\n",
+                e.what()
+            );
+            suggestedConstraints.clear();
+            unsetCursor();
         }
     });
 }
@@ -353,11 +385,18 @@ void DrawSketchHandlerDragAutoConstraint::updateSuggestions()
             }
             else if (geo->isDerivedFrom<Part::GeomCurve>()) {
                 const auto* curve = static_cast<const Part::GeomCurve*>(geo);
-                double parameter;
-
-                if (curve->closestParameter(toVector3d(actualPos), parameter)) {
-                    const Base::Vector2d closestPoint = toVector2d(curve->pointAtParameter(parameter));
-                    considerCurve(geoId, (actualPos - closestPoint).Length());
+                try {
+                    double parameter = 0.0;
+                    if (curve->closestParameter(toVector3d(actualPos), parameter)) {
+                        const Base::Vector2d closestPoint
+                            = toVector2d(curve->pointAtParameter(parameter));
+                        considerCurve(geoId, (actualPos - closestPoint).Length());
+                    }
+                }
+                catch (const Base::Exception&) {
+                    // Degenerate / kernel-rejected curve: skip this snap candidate.
+                }
+                catch (const Standard_Failure&) {
                 }
             }
         }
