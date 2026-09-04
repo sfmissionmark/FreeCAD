@@ -23,6 +23,8 @@
  ***************************************************************************/
 
 #include <algorithm>
+#include <map>
+#include <vector>
 
 #include <QDir>
 #include <QFileInfo>
@@ -297,6 +299,36 @@ void PropertyLinkBase::updateElementReferences(DocumentObject* feature, bool rev
                 FC_ERR("Failed to update element reference of " << propertyName(prop) << ": "
                                                                 << e.what());
             }
+        }
+    }
+}
+
+void PropertyLinkBase::breakElementReferences(DocumentObject* feature, bool unregisterOwn)
+{
+    if (!feature) {
+        return;
+    }
+
+    auto it = _ElementRefMap.find(feature);
+    if (it != _ElementRefMap.end()) {
+        std::vector<PropertyLinkBase*> inbound(it->second.begin(), it->second.end());
+        _ElementRefMap.erase(it);
+        for (auto prop : inbound) {
+            if (prop) {
+                prop->_ElementRefs.erase(feature);
+            }
+        }
+    }
+
+    if (!unregisterOwn) {
+        return;
+    }
+
+    std::map<std::string, Property*> props;
+    feature->getPropertyMap(props);
+    for (auto& kv : props) {
+        if (auto link = freecad_cast<PropertyLinkBase*>(kv.second)) {
+            link->unregisterElementReference();
         }
     }
 }

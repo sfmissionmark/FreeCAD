@@ -149,22 +149,26 @@ def make_sketch(
     else:
         nobj = App.ActiveDocument.addObject("Sketcher::SketchObject", name)
 
-    # Collect constraints and add in one go to improve performance
+    # Collect geometry and constraints, then add in one go. addGeometry() one
+    # edge at a time rebuilds Sketcher geo-history (rtree + vertex index) on
+    # every call and pegs the UI on even modest shapes.
     constraints = []
     radiuses = {}
+    geometries = []
+    radius_edges = []
 
-    def addRadiusConstraint(edge):
+    def addRadiusConstraint(geo_id, edge):
         try:
             if radiusPrecision < 0:
                 return
             if radiusPrecision == 0:
-                constraints.append(Constraint("Radius", nobj.GeometryCount - 1, edge.Curve.Radius))
+                constraints.append(Constraint("Radius", geo_id, edge.Curve.Radius))
                 return
             r = round(edge.Curve.Radius, radiusPrecision)
-            constraints.append(Constraint("Equal", radiuses[r], nobj.GeometryCount - 1))
+            constraints.append(Constraint("Equal", radiuses[r], geo_id))
         except KeyError:
-            radiuses[r] = nobj.GeometryCount - 1
-            constraints.append(Constraint("Radius", nobj.GeometryCount - 1, r))
+            radiuses[r] = geo_id
+            constraints.append(Constraint("Radius", geo_id, r))
         except AttributeError:
             pass
 
@@ -204,15 +208,16 @@ def make_sketch(
             if angle:
                 shape.rotate(App.Vector(0, 0, 0), axis, -angle)
             point = Part.Point(shape.Point)
-            nobj.addGeometry(point)
+            geometries.append(point)
+            radius_edges.append(None)
             ok = True
 
         elif tp == "Shape" or hasattr(obj, "Shape"):
             shape = obj if tp == "Shape" else obj.Shape
             for e in shape.Edges:
                 newedge = convertBezier(e)
-                nobj.addGeometry(geo_edges.orientEdge(newedge, normal, make_arc=True))
-                addRadiusConstraint(newedge)
+                geometries.append(geo_edges.orientEdge(newedge, normal, make_arc=True))
+                radius_edges.append(newedge)
             ok = True
 
         if ok and delete:
@@ -243,7 +248,27 @@ def make_sketch(
                     + "\n"
                 )
 
+    if geometries:
+        nobj.addGeometry(geometries)
+        first_geo_id = nobj.GeometryCount - len(geometries)
+        for offset, edge in enumerate(radius_edges):
+            if edge is not None:
+                addRadiusConstraint(first_geo_id + offset, edge)
+
     nobj.addConstraint(constraints)
+    # Coincidence / HV detection is quadratic in vertices. Skip it on dense
+    # conversions so Draft-to-Sketch cannot freeze the UI; the geometry is
+    # already in the sketch.
+    _autoconstraint_geo_limit = 200
+    if autoconstraints and nobj.GeometryCount > _autoconstraint_geo_limit:
+        App.Console.PrintWarning(
+            translate(
+                "draft",
+                "Skipping auto-constraints on sketch with {} edges (limit {}).",
+            ).format(nobj.GeometryCount, _autoconstraint_geo_limit)
+            + "\n"
+        )
+        autoconstraints = False
     if autoconstraints:
         nobj.detectMissingPointOnPointConstraints(utils.tolerance())
         nobj.makeMissingPointOnPointCoincident(False)

@@ -396,6 +396,16 @@ public:
     /// Update all element references in the _ElementRefMap
     static void updateAllElementReferences(bool reverse = false);
 
+    /** Drop element-map entries for a document object that is going away.
+     *
+     * Must run while *feature* is still a valid pointer. Pass
+     * ``unregisterOwn=true`` only while properties/extensions are alive
+     * (``unsetupObject``). The destructor may call this with
+     * ``unregisterOwn=false`` to drop the map key after derived members
+     * have already been destroyed.
+     */
+    static void breakElementReferences(DocumentObject* feature, bool unregisterOwn = true);
+
     /// Obtain link properties that contain element references to a given object
     static const std::unordered_set<PropertyLinkBase*>& getElementReferences(DocumentObject*);
 

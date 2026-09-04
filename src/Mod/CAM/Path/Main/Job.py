@@ -622,10 +622,24 @@ class ObjectJob:
                         # base.ViewObject.ShapeMaterial.Shininess = 0.85
 
     def onChanged(self, obj, prop):
-        if prop == "PostProcessor" and obj.PostProcessor:
+        if prop != "PostProcessor" or not obj.PostProcessor:
+            return
+        # Instantiating a Processor during document restore walks Operations.Group
+        # while link maps are still incomplete (empty Job.Machine is common on
+        # older files). That path has segfaulted in updateAllElementReferences.
+        try:
+            if FreeCAD.isRestoring() or obj.isRestoring():
+                return
+        except Exception:
+            pass
+        try:
             processor = PostProcessorFactory.get_post_processor(obj, obj.PostProcessor)
+            if processor is None:
+                return
             self.tooltip = processor.tooltip
             self.tooltipArgs = processor.tooltipArgs
+        except Exception as e:
+            Path.Log.debug(f"Could not load post processor '{obj.PostProcessor}': {e}")
 
     def baseObject(self, obj, base):
         """Return the base object, not its clone."""

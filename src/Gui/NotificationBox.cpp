@@ -23,6 +23,7 @@
 
 #include <QApplication>
 #include <QEvent>
+#include <QGuiApplication>
 #include <QLabel>
 #include <QScreen>
 #include <QStyleOption>
@@ -276,7 +277,11 @@ void NotificationLabel::placeNotificationLabel(const QPoint& pos)
 {
     QPoint p = pos;
     const QScreen* screen = QGuiApplication::screenAt(pos);
-    // a QScreen's handle *should* never be null, so this is a bit paranoid
+    // Off-screen leftovers (unplugged monitor) make screenAt() null. Qt::ToolTip
+    // still maps to a global always-on-top window, so fall back to primary.
+    if (!screen || !screen->handle()) {
+        screen = QGuiApplication::primaryScreen();
+    }
     if (screen && screen->handle()) {
         const QSize cursorSize = QSize(16, 16);
 
