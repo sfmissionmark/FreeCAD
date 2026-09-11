@@ -469,8 +469,10 @@ std::vector<SoFCUnifiedSelection::PickedInfo> SoFCUnifiedSelection::getPickedLis
     }
 
     // A selection gate rejected every hit. Treat this like an empty pick so the event can reach
-    // the active view provider without a rejected-selection notification.
-    if (!canFinalizeSinglePick(ret)) {
+    // the active view provider without a rejected-selection notification. sawSelectionGate/
+    // anyPassedGate already track this incrementally from the loop above (see the comment
+    // by the early-break condition), so reuse them instead of re-deriving it via candidates.
+    if (sawSelectionGate && !anyPassedGate) {
         return {};
     }
 

@@ -181,6 +181,9 @@ configure-release = { cmd = [ "cmake", "--preset", "conda-linux-release" ], depe
 [target.osx-64.tasks]
 configure-debug = { cmd = [ "cmake", "--preset", "conda-macos-debug", "{{ extra_args }}" ], args = [{ "arg" = "extra_args", "default" = "" }], depends-on = ["initialize"], env={ CFLAGS="", CXXFLAGS="", DEBUG_CFLAGS="", DEBUG_CXXFLAGS="" }}
 configure-release = { cmd = [ "cmake", "--preset", "conda-macos-release" ], depends-on = ["initialize"], env={ CFLAGS="", CXXFLAGS="", DEBUG_CFLAGS="", DEBUG_CXXFLAGS="" }}
+app-debug = { cmd = ["bash", "tools/macos-dev-build-install.sh", "debug"] }
+app-release = { cmd = ["bash", "tools/macos-dev-build-install.sh", "release"] }
+app = [{ task = "app-debug" }]
 
 [target.osx-arm64.tasks]
 configure-debug = { cmd = [ "cmake", "--preset", "conda-macos-debug", "{{ extra_args }}" ], args = [{ "arg" = "extra_args", "default" = "" }], depends-on = ["initialize"], env={ CFLAGS="", CXXFLAGS="", DEBUG_CFLAGS="", DEBUG_CXXFLAGS="" }}
@@ -189,6 +192,11 @@ configure-release = { cmd = [ "cmake", "--preset", "conda-macos-release" ], depe
 # otherwise double-loads Mod/*.so and lib/*.so and aborts debug Coin on cue docs.
 freecad-debug = { cmd = [".pixi/envs/default/bin/FreeCAD"], depends-on = ["install-debug"] }
 freecad-release = { cmd = [".pixi/envs/default/bin/FreeCAD"], depends-on = ["install-release"] }
+# One-shot: configure + build + install + drop a launcher app in /Applications
+# (FreeCAD-dev.app) that execs the installed binary from this checkout.
+app-debug = { cmd = ["bash", "tools/macos-dev-build-install.sh", "debug"] }
+app-release = { cmd = ["bash", "tools/macos-dev-build-install.sh", "release"] }
+app = [{ task = "app-debug" }]
 
 [target.win-64.tasks]
 configure-debug = { cmd = [ "cmake", "--preset", "conda-windows-debug", "-DCMAKE_GENERATOR_PLATFORM=", "-DCMAKE_GENERATOR_TOOLSET=", "{{ extra_args }}" ], args = [{ "arg" = "extra_args", "default" = "" }], depends-on = ["initialize"], env={ CFLAGS="", CXXFLAGS="", DEBUG_CFLAGS="", DEBUG_CXXFLAGS="" }}
