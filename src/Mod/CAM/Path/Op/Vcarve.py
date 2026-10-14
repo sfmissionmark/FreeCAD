@@ -375,11 +375,95 @@ def _getPartEdge(edge, geom):
     return edge.toShape(zBegin, zEnd)
 
 
-def _getPartEdges(obj, vWire, geom):
-    edges = []
-    for e in vWire:
-        edges.append(_getPartEdge(e, geom))
-    return edges
+def _medialEvaluator(medial):
+    """Evaluate XY directly from Voronoi sites, preserving graph endpoints."""
+    p0, p1 = [FreeCAD.Vector(v.toPoint(0.0)) for v in medial.Vertices]
+    if medial.isLinear():
+        return lambda t: p0 + (p1 - p0) * t
+    point_cell = medial.Cell if medial.Cell.containsPoint() else medial.Twin.Cell
+    segment_cell = medial.Twin.Cell if medial.Cell.containsPoint() else medial.Cell
+    focus = point_cell.getSource()
+    a, b = segment_cell.getSource()
+    tangent = (b - a).normalize()
+    foot = a + tangent * ((focus - a).dot(tangent))
+    separation = (focus - foot).Length
+    if separation <= 1e-12:
+        return lambda t: p0 + (p1 - p0) * t
+    normal = (focus - foot) / separation
+    u0, u1 = (p0 - foot).dot(tangent), (p1 - foot).dot(tangent)
+
+    def evaluate(t):
+        if t == 0.0:
+            return p0
+        if t == 1.0:
+            return p1
+        u = u0 + (u1 - u0) * t
+        return foot + tangent * u + normal * ((u*u + separation*separation) / (2*separation))
+    return evaluate
+
+
+def _getPartEdges(obj, vWire, geom, boundary=None):
+    if boundary is None:
+        return [_getPartEdge(e, geom) for e in vWire]
+
+    # XY medial edges may be parabolic. Endpoint depths do not determine their
+    # interior clearance, and a depth limit can introduce an additional kink.
+    # Evaluate clearance against the original face boundary, then adaptively
+    # approximate the resulting XYZ curve, not a lifted endpoint parabola.
+    tolerance = max(1e-7, float(obj.Tolerance))
+    result = []
+    for medial in vWire:
+        if hasattr(medial, "Cell"):
+            evaluate = _medialEvaluator(medial)
+            first, last = 0.0, 1.0
+        else:
+            planar = medial.toShape(0.0, 0.0)
+            evaluate = planar.valueAt
+            first, last = planar.FirstParameter, planar.LastParameter
+            if hasattr(medial, "Vertices"):
+                expected = FreeCAD.Vector(medial.Vertices[0].toPoint(0.0))
+                if (evaluate(last)-expected).Length < (evaluate(first)-expected).Length:
+                    first, last = last, first
+        cache = {}
+
+        def position(parameter):
+            if parameter not in cache:
+                point = evaluate(parameter)
+                clearance = boundary.distToShape(Part.Vertex(point))[0]
+                # Keep full precision here; rounding the radius before scaling
+                # imposes an accuracy floor independent of the chosen tolerance.
+                z = max(geom.start - clearance * geom.scale, geom.maximumDepth) + geom.offset
+                cache[parameter] = FreeCAD.Vector(point.x, point.y, z)
+            return cache[parameter]
+
+        def refine(first, last, level=0):
+            p, q = position(first), position(last)
+            error = 0.0
+            for fraction in (0.25, 0.5, 0.75):
+                measured = position(first + (last - first) * fraction)
+                interpolated = p + (q - p) * fraction
+                error = max(error, (measured - interpolated).Length)
+            if error <= tolerance:
+                return [p, q]
+            if level >= 24:
+                raise RuntimeError("V-carve depth sampling did not converge to the requested tolerance")
+            middle = (first + last) / 2
+            return refine(first, middle, level + 1)[:-1] + refine(middle, last, level + 1)
+
+        points = refine(first, last)
+        # OCC cannot construct an edge below its linear confusion tolerance.
+        # Retain the last emitted point so sub-tolerance steps accumulate
+        # instead of dropping an entire finely sampled section of the path.
+        anchor = points[0]
+        for point in points[1:]:
+            if (point - anchor).Length <= 1e-7:
+                continue
+            edge = Part.makeLine(anchor, point)
+            if edge.isNull():
+                raise RuntimeError("V-carve generated a null cutting edge")
+            result.append(edge)
+            anchor = point
+    return result
 
 
 class ObjectVcarve(PathEngraveBase.ObjectOp):
@@ -498,7 +582,12 @@ class ObjectVcarve(PathEngraveBase.ObjectOp):
             for wire in wires:
                 Path.Log.debug("discretize value: {}".format(obj.Discretize))
                 pts = wire.discretize(QuasiDeflection=obj.Discretize)
-                ptv = [FreeCAD.Vector(p.x, p.y) for p in pts]
+                # Boost builds its diagram from integer sites. Keep the stored
+                # sites on that SAME grid, otherwise toShape()/getSource()
+                # reconstruct curves from different coordinates than vertices.
+                ptv = [FreeCAD.Vector(round(p.x * diagram_scale) / diagram_scale,
+                                      round(p.y * diagram_scale) / diagram_scale) for p in pts]
+                ptv = [p for i,p in enumerate(ptv) if i == 0 or p != ptv[i-1]]
                 # Check over the last point before just closing the polygon
                 # by adding the start again.  If the discretizer was aiming
                 # for the last point and missed by a little bit, closing the
@@ -521,7 +610,12 @@ class ObjectVcarve(PathEngraveBase.ObjectOp):
 
         for f in faces:
             voronoiWires = []
-            vd = Path.Voronoi.Diagram()
+            # A binary scale makes round-trip integer coordinates exact in
+            # double precision. Leave headroom within Boost's signed int32 range.
+            box = f.BoundBox
+            extent = max(1.0, abs(box.XMin), abs(box.XMax), abs(box.YMin), abs(box.YMax))
+            diagram_scale = 2.0 ** math.floor(math.log2((2.0 ** 30) / extent))
+            vd = Path.Voronoi.Diagram(diagram_scale)
             insert_many_wires(vd, f.Wires)
 
             vd.construct()
@@ -586,7 +680,7 @@ class ObjectVcarve(PathEngraveBase.ObjectOp):
             positionHistory = None
 
             for w in wires:
-                pWire = _getPartEdges(obj, w, geom)
+                pWire = _getPartEdges(obj, w, geom, boundary)
                 if pWire:
                     pathlist.extend(_cutWire(pWire, positionHistory))
 
@@ -636,6 +730,8 @@ class ObjectVcarve(PathEngraveBase.ObjectOp):
 
         # iterate over each face separately
         for face, wires in self.buildMedialWires(obj, faces).items():
+            boundary = Part.makeCompound(face.Wires)
+            boundary.translate(FreeCAD.Vector(0, 0, -face.BoundBox.ZMin))
 
             # If using depth step-down, calculate maximum usable depth for current face.
             # This is done to avoid adding additional step-down engraving passes when it
